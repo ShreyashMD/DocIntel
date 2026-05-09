@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Secrets — never commit these
+.env
+*.env
+secrets.py
+
+# docintel local index (auto-generated on first ingest)
+.docintel/
+
+# OS
+.DS_Store
+Thumbs.db
