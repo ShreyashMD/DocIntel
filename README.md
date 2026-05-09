@@ -592,4 +592,4 @@ This means: swapping Qdrant for Milvus, or Gemini for a local Ollama model, requ
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
