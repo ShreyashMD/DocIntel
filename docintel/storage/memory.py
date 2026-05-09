@@ -1,12 +1,17 @@
 from __future__ import annotations
 import json
+import os
 import pathlib
+import threading
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 
 from docintel.core.entities import Chunk, SearchResult
 from docintel.storage.base import VectorStore
+
+
+_SCHEMA_VERSION = 1
 
 
 class MemoryVectorStore(VectorStore):
@@ -23,6 +28,7 @@ class MemoryVectorStore(VectorStore):
     def __init__(self, persist_dir: Optional[str] = None) -> None:
         self._index: Dict[str, List[Dict[str, Any]]] = {}
         self._persist_path: Optional[pathlib.Path] = None
+        self._lock = threading.RLock()
         if persist_dir:
             p = pathlib.Path(persist_dir)
             p.mkdir(parents=True, exist_ok=True)
@@ -31,29 +37,33 @@ class MemoryVectorStore(VectorStore):
     # ------------------------------------------------------------------
 
     def upsert(self, chunks: List[Chunk], tenant_id: str, doc_path: str) -> None:
-        if tenant_id not in self._index:
-            self._index[tenant_id] = []
-        # Remove stale entries for this doc first
-        self._index[tenant_id] = [
-            e for e in self._index[tenant_id] if e["doc_path"] != doc_path
-        ]
-        for chunk in chunks:
-            if chunk.embedding is None:
-                continue
-            self._index[tenant_id].append(
-                {
-                    "chunk": {
-                        "id": chunk.id,
-                        "text": chunk.text,
-                        "metadata": {k: v for k, v in chunk.metadata.items() if k != "_embed_text"},
-                    },
-                    "doc_path": doc_path,
-                    "vector": chunk.embedding,
-                }
-            )
+        with self._lock:
+            if tenant_id not in self._index:
+                self._index[tenant_id] = []
+            # Remove stale entries for this doc first
+            self._index[tenant_id] = [
+                e for e in self._index[tenant_id] if e["doc_path"] != doc_path
+            ]
+            for chunk in chunks:
+                if chunk.embedding is None:
+                    continue
+                self._index[tenant_id].append(
+                    {
+                        "chunk": {
+                            "id": chunk.id,
+                            "text": chunk.text,
+                            "metadata": {
+                                k: v for k, v in chunk.metadata.items() if k != "_embed_text"
+                            },
+                        },
+                        "doc_path": doc_path,
+                        "vector": chunk.embedding,
+                    }
+                )
 
     def search(self, vector: List[float], tenant_id: str, top_k: int) -> List[SearchResult]:
-        entries = self._index.get(tenant_id, [])
+        with self._lock:
+            entries = list(self._index.get(tenant_id, []))
         if not entries:
             return []
 
@@ -91,10 +101,11 @@ class MemoryVectorStore(VectorStore):
         return results
 
     def delete_document(self, doc_path: str, tenant_id: str) -> None:
-        if tenant_id in self._index:
-            self._index[tenant_id] = [
-                e for e in self._index[tenant_id] if e["doc_path"] != doc_path
-            ]
+        with self._lock:
+            if tenant_id in self._index:
+                self._index[tenant_id] = [
+                    e for e in self._index[tenant_id] if e["doc_path"] != doc_path
+                ]
 
     # ------------------------------------------------------------------
     # Persistence
@@ -102,18 +113,39 @@ class MemoryVectorStore(VectorStore):
     def save(self) -> None:
         if self._persist_path is None:
             return
-        self._persist_path.write_text(json.dumps(self._index), encoding="utf-8")
+        payload = {"schema_version": _SCHEMA_VERSION, "index": self._index}
+        tmp_path = self._persist_path.with_suffix(".tmp")
+        with self._lock:
+            tmp_path.write_text(json.dumps(payload), encoding="utf-8")
+            os.replace(tmp_path, self._persist_path)
 
     def load(self) -> None:
         if self._persist_path is None or not self._persist_path.exists():
             return
-        self._index = json.loads(self._persist_path.read_text(encoding="utf-8"))
+        try:
+            payload = json.loads(self._persist_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Corrupt docintel index: {self._persist_path}") from exc
+
+        with self._lock:
+            if isinstance(payload, dict) and "schema_version" in payload:
+                if payload["schema_version"] != _SCHEMA_VERSION:
+                    raise ValueError(
+                        "Unsupported docintel index schema version: "
+                        f"{payload['schema_version']}"
+                    )
+                self._index = payload.get("index", {})
+            else:
+                # Backward compatibility with the original plain-index format.
+                self._index = payload
 
     # ------------------------------------------------------------------
 
     @property
     def total_chunks(self) -> int:
-        return sum(len(v) for v in self._index.values())
+        with self._lock:
+            return sum(len(v) for v in self._index.values())
 
     def tenants(self) -> list[str]:
-        return list(self._index.keys())
+        with self._lock:
+            return list(self._index.keys())

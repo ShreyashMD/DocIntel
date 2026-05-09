@@ -8,7 +8,9 @@ Set your key first:
 """
 
 import os
+
 import docintel as di
+from docintel import Pipeline
 
 # ── 1. Configure once ──────────────────────────────────────────────────────
 di.configure(gemini_api_key=os.environ["GEMINI_API_KEY"])
@@ -30,9 +32,6 @@ di.configure(gemini_api_key=os.environ["GEMINI_API_KEY"])
 # ── 5. Stats ───────────────────────────────────────────────────────────────
 print(di.stats())
 
-
-# ── Class-based alternative ────────────────────────────────────────────────
-from docintel import Pipeline
 
 p = Pipeline(gemini_api_key=os.environ["GEMINI_API_KEY"])
 # p.ingest("document.pdf", tenant_id="company_a")

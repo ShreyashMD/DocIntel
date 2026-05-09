@@ -7,6 +7,9 @@ dist/
 build/
 .venv/
 venv/
+.uv-cache/
+.uv-python/
+.pytest_cache/
 
 # Secrets — never commit these
 .env
@@ -15,6 +18,12 @@ secrets.py
 
 # docintel local index (auto-generated on first ingest)
 .docintel/
+
+# Pytest temp dirs
+.pytesttmp/
+
+# LightRAG knowledge graph (auto-generated)
+.docintel_graph/
 
 # OS
 .DS_Store

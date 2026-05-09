@@ -19,15 +19,26 @@ def _is_heading(line: str) -> str | None:
     line = line.strip()
     if not line or len(line) > 120:
         return None
-    for pat in _HEADING_PATTERNS:
+    for index, pat in enumerate(_HEADING_PATTERNS):
         m = pat.match(line)
         if m:
+            if index == 2:
+                return f"{m.group(1)} {m.group(2)}"
+            if index == 3 and line.endswith("."):
+                return None
             return m.group(1) if m.lastindex else line
     return None
 
 
 def _split_into_token_chunks(text: str, size: int, overlap: int) -> List[str]:
     """Split text into overlapping word-based chunks approximating token count."""
+    if size <= 0:
+        raise ValueError("size must be greater than 0.")
+    if overlap < 0:
+        raise ValueError("overlap must be 0 or greater.")
+    if overlap >= size:
+        raise ValueError("overlap must be smaller than size.")
+
     words = text.split()
     if not words:
         return []
@@ -57,6 +68,14 @@ class HierarchicalChunker:
     """
 
     def __init__(self, chunk_size: int = 600, chunk_overlap: int = 80, min_chunk_size: int = 80):
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be greater than 0.")
+        if chunk_overlap < 0:
+            raise ValueError("chunk_overlap must be 0 or greater.")
+        if chunk_overlap >= chunk_size:
+            raise ValueError("chunk_overlap must be smaller than chunk_size.")
+        if min_chunk_size < 0:
+            raise ValueError("min_chunk_size must be 0 or greater.")
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.min_chunk_size = min_chunk_size
