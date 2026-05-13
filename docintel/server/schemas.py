@@ -13,12 +13,14 @@ class AskRequest(BaseModel):
     question: str
     tenant_id: str = "default"
     top_k: Optional[int] = None
+    doc_ids: Optional[List[str]] = None
 
 
 class SearchRequest(BaseModel):
     query: str
     tenant_id: str = "default"
     top_k: Optional[int] = None
+    doc_ids: Optional[List[str]] = None
 
 
 class ChunkSchema(BaseModel):
@@ -32,6 +34,7 @@ class SearchResultSchema(BaseModel):
     score: float
     document_path: str
     tenant_id: str
+    doc_id: Optional[str] = None
 
 
 class QueryResultSchema(BaseModel):

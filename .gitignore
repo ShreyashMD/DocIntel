@@ -25,6 +25,9 @@ secrets.py
 # LightRAG knowledge graph (auto-generated)
 .docintel_graph/
 
+# Runtime logs
+*.log
+
 # OS
 .DS_Store
 Thumbs.db

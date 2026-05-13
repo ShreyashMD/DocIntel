@@ -1,0 +1,82 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────
+# DocIntel — full-stack deployment
+#
+# Usage:
+#   cp .env.example .env          # fill in your keys
+#   docker compose up -d
+#
+# Panels:
+#   Frontend (web)  → http://localhost:3000
+#   Backend  (api)  → http://localhost:8000
+#   Swagger  (docs) → http://localhost:8000/docs
+# ─────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── PostgreSQL + pgvector ────────────────────────────────────────
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     ${POSTGRES_USER:-docintel}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-docintel}
+      POSTGRES_DB:       ${POSTGRES_DB:-docintel}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-docintel}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── FastAPI backend ──────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-docintel}:${POSTGRES_PASSWORD:-docintel}@db:5432/${POSTGRES_DB:-docintel}
+      SECRET_KEY:   ${SECRET_KEY}
+      # Default LLM provider (companies can override in their settings)
+      GEMINI_API_KEY:    ${GEMINI_API_KEY:-}
+      OPENAI_API_KEY:    ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    command: >
+      python -m docintel.server
+        --backend pgvector
+        --cors-origins http://localhost:3000
+        --provider ${DEFAULT_PROVIDER:-gemini}
+        --rag-mode hybrid
+        --lightrag-dir /app/.docintel_graph
+        --log-level INFO
+    ports:
+      - "8000:8000"
+    volumes:
+      - docintel_data:/app/.docintel
+      - lightrag_data:/app/.docintel_graph
+
+  # ── Next.js frontend ─────────────────────────────────────────────
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:
+  docintel_data:
+  lightrag_data:

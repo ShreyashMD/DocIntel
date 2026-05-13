@@ -61,9 +61,18 @@ class MemoryVectorStore(VectorStore):
                     }
                 )
 
-    def search(self, vector: List[float], tenant_id: str, top_k: int) -> List[SearchResult]:
+    def search(
+        self,
+        vector: List[float],
+        tenant_id: str,
+        top_k: int,
+        doc_paths: Optional[List[str]] = None,
+    ) -> List[SearchResult]:
         with self._lock:
             entries = list(self._index.get(tenant_id, []))
+        if doc_paths is not None:
+            allowed = set(doc_paths)
+            entries = [e for e in entries if e["doc_path"] in allowed]
         if not entries:
             return []
 

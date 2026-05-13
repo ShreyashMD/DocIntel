@@ -10,6 +10,12 @@ from docintel._config import Config
 from docintel.core.entities import Document, QueryResult, SearchResult
 from docintel.extractors.pdf import PdfExtractor
 from docintel.extractors.text import TextExtractor
+from docintel.extractors.docx import DocxExtractor
+from docintel.extractors.xlsx import XlsxExtractor
+from docintel.extractors.csv_extractor import CsvExtractor
+from docintel.extractors.pptx import PptxExtractor
+from docintel.extractors.html import HtmlExtractor
+from docintel.extractors.image import ImageExtractor
 from docintel.llm.gemini import GeminiClient  # kept at module level so tests can monkeypatch it
 from docintel.llm.base import BaseLLMClient
 from docintel.logging import get_correlation_id, set_correlation_id
@@ -21,11 +27,29 @@ from docintel.storage.memory import MemoryVectorStore
 
 
 _EXTRACTOR_MAP = {
-    ".pdf": PdfExtractor,
-    ".txt": TextExtractor,
-    ".md": TextExtractor,
-    ".rst": TextExtractor,
-    ".log": TextExtractor,
+    ".pdf":  PdfExtractor,
+    ".txt":  TextExtractor,
+    ".md":   TextExtractor,
+    ".rst":  TextExtractor,
+    ".log":  TextExtractor,
+    ".csv":  CsvExtractor,
+    ".docx": DocxExtractor,
+    ".doc":  DocxExtractor,
+    ".xlsx": XlsxExtractor,
+    ".xls":  XlsxExtractor,
+    ".pptx": PptxExtractor,
+    ".ppt":  PptxExtractor,
+    ".html": HtmlExtractor,
+    ".htm":  HtmlExtractor,
+    # Image formats — OCR via pytesseract
+    ".png":  ImageExtractor,
+    ".jpg":  ImageExtractor,
+    ".jpeg": ImageExtractor,
+    ".tiff": ImageExtractor,
+    ".tif":  ImageExtractor,
+    ".bmp":  ImageExtractor,
+    ".webp": ImageExtractor,
+    ".gif":  ImageExtractor,
 }
 
 logger = logging.getLogger(__name__)
@@ -73,7 +97,8 @@ class Pipeline:
         self,
         path: str,
         tenant_id: str = "default",
-        summarize: bool = True,
+        summarize: bool = False,
+        index_graph: bool = False,
         verbose: bool = True,
     ) -> Document:
         """
@@ -118,14 +143,21 @@ class Pipeline:
         logger.debug("extract_done", extra={"pages": len(pages), "ms": _ms(t0)})
 
         # 2. Summarize (Contextual Retrieval)
+        # Cap at 60 pages to stay within LLM token limits for large documents.
+        _SUMMARIZE_PAGE_CAP = 60
         doc_summary = ""
         if summarize:
-            full_text = "\n\n".join(t for _, t in pages)
+            pages_for_summary = pages[:_SUMMARIZE_PAGE_CAP]
+            full_text = "\n\n".join(t for _, t in pages_for_summary)
             t0 = time.perf_counter()
             if verbose:
-                logger.info("summarize", extra={"path": path})
-            doc_summary = self._llm.summarize(full_text)
-            doc.summary = doc_summary
+                logger.info("summarize", extra={"path": path, "pages": len(pages_for_summary)})
+            try:
+                doc_summary = self._llm.summarize(full_text)
+                doc.summary = doc_summary
+            except Exception as exc:
+                logger.warning("summarize failed, continuing without summary", exc_info=True)
+                doc_summary = ""
             logger.debug("summarize_done", extra={"ms": _ms(t0)})
 
         # 3. Hierarchical chunk
@@ -151,11 +183,18 @@ class Pipeline:
         self._store.save()
         logger.debug("store_done", extra={"ms": _ms(t0)})
 
-        # 6. Also index into LightRAG knowledge graph (graph / hybrid modes)
-        if self._lightrag is not None:
+        # 6. Optionally index into LightRAG knowledge graph.
+        # Skipped by default (index_graph=False) because entity extraction is slow.
+        # Use POST /graph/rebuild to build or refresh the graph explicitly.
+        _LIGHTRAG_PAGE_CAP = 80
+        if index_graph and self._lightrag is not None:
             t0 = time.perf_counter()
-            full_text = "\n\n".join(t for _, t in pages)
-            self._lightrag.insert(full_text)
+            pages_for_graph = pages[:_LIGHTRAG_PAGE_CAP]
+            full_text = "\n\n".join(t for _, t in pages_for_graph)
+            try:
+                self._lightrag.insert(full_text)
+            except Exception as exc:
+                logger.warning("lightrag insert failed", exc_info=True)
             logger.debug("lightrag_done", extra={"ms": _ms(t0)})
 
         increment("docs_ingested")
@@ -203,6 +242,7 @@ class Pipeline:
         query: str,
         tenant_id: str = "default",
         top_k: Optional[int] = None,
+        doc_paths: Optional[List[str]] = None,
     ) -> List[SearchResult]:
         """Semantic similarity search. Returns ranked SearchResult objects."""
         if get_correlation_id() is None:
@@ -210,7 +250,7 @@ class Pipeline:
         k = top_k or self._config.top_k
         t0 = time.perf_counter()
         vector = self._embedder.embed_query(query)
-        results = self._store.search(vector, tenant_id=tenant_id, top_k=k)
+        results = self._store.search(vector, tenant_id=tenant_id, top_k=k, doc_paths=doc_paths)
         increment("queries")
         logger.debug("search_done", extra={"hits": len(results), "ms": _ms(t0), "tenant": tenant_id})
         return results
@@ -220,6 +260,7 @@ class Pipeline:
         question: str,
         tenant_id: str = "default",
         top_k: Optional[int] = None,
+        doc_paths: Optional[List[str]] = None,
     ) -> QueryResult:
         """
         RAG query: retrieve relevant chunks, then generate an answer with Gemini.
@@ -232,7 +273,7 @@ class Pipeline:
         mode = self._config.rag_mode
 
         # Graph-only: skip vector store entirely, let LightRAG answer
-        if mode == "graph" and self._lightrag is not None:
+        if mode == "graph" and self._lightrag is not None and doc_paths is None:
             answer = self._lightrag.query(question, mode="hybrid")
             logger.info("ask_done", extra={"tenant": tenant_id, "mode": "graph", "ms": _ms(t0)})
             return QueryResult(
@@ -243,7 +284,7 @@ class Pipeline:
             )
 
         # Vector or hybrid: always do vector search for structured sources
-        results = self.search(question, tenant_id=tenant_id, top_k=top_k)
+        results = self.search(question, tenant_id=tenant_id, top_k=top_k, doc_paths=doc_paths)
         if not results:
             return QueryResult(
                 question=question,
@@ -252,12 +293,16 @@ class Pipeline:
                 model=self._config.generation_model,
             )
 
-        if mode == "hybrid" and self._lightrag is not None:
-            # Graph answer is richer (entity/relationship reasoning); vector sources provide citations
-            answer = self._lightrag.query(question, mode="hybrid")
+        context = self._build_context(results)
+
+        if mode == "hybrid" and self._lightrag is not None and doc_paths is None:
+            graph_answer = self._lightrag.query(question, mode="hybrid")
+            if graph_answer and "[no-context]" not in graph_answer:
+                answer = graph_answer
+            else:
+                answer = self._generate_answer(question, context)
         else:
-            context = self._build_context(results)
-            answer = self._llm.answer(question, context)
+            answer = self._generate_answer(question, context)
 
         logger.info("ask_done", extra={"tenant": tenant_id, "sources": len(results), "ms": _ms(t0)})
         return QueryResult(
@@ -266,6 +311,39 @@ class Pipeline:
             sources=results,
             model=self._config.generation_model,
         )
+
+    def _generate_answer(self, question: str, context: str) -> str:
+        """Dispatch to the correct pipeline mode."""
+        if self._config.pipeline_mode == "writer_reviewer":
+            return self._answer_with_review(question, context)
+        return self._llm.answer(question, context)
+
+    def _answer_with_review(self, question: str, context: str) -> str:
+        """Two-phase writer + reviewer pipeline.
+
+        Phase 1 — Writer: generates an initial draft answer from the context.
+        Phase 2 — Reviewer: fact-checks the draft against the context, fixes
+                  errors and gaps, and returns the corrected final answer.
+        """
+        draft = self._llm.answer(question, context)
+        logger.debug("writer_reviewer: draft produced, sending to reviewer")
+
+        review_prompt = (
+            "You are a meticulous technical reviewer and fact-checker.\n\n"
+            "A writer has drafted an answer to the question below using the provided source documents. "
+            "Your job:\n"
+            "1. Verify every factual claim against the source context.\n"
+            "2. Identify anything important that was missed or incompletely covered.\n"
+            "3. Correct any wrong or missing source citations (use [Source N] or [Source N, page P]).\n"
+            "4. Improve clarity and logical flow where needed.\n\n"
+            f"QUESTION: {question}\n\n"
+            f"SOURCE CONTEXT:\n{context}\n\n"
+            f"WRITER'S DRAFT:\n{draft}\n\n"
+            "Write the improved, corrected final answer. "
+            "If the draft is already fully accurate, reproduce it with only minor polish.\n\n"
+            "FINAL ANSWER:"
+        )
+        return self._llm.generate(review_prompt)
 
     def delete(self, path: str, tenant_id: str = "default") -> None:
         """Remove all chunks for a specific document from the store."""
@@ -292,7 +370,14 @@ class Pipeline:
                 f"Unsupported file type '{suffix}'. "
                 f"Supported: {list(_EXTRACTOR_MAP)}"
             )
-        return extractor_cls().extract(path)
+        extractor = extractor_cls()
+        if isinstance(extractor, PdfExtractor):
+            return extractor.extract(
+                path,
+                ocr_enabled=self._config.ocr_enabled,
+                min_chars=self._config.ocr_min_chars_per_page,
+            )
+        return extractor.extract(path)
 
     @classmethod
     def supported_extensions(cls) -> tuple[str, ...]:
@@ -351,6 +436,9 @@ def _build_llm_client(config: Config) -> BaseLLMClient:
     if provider == "ollama":
         from docintel.llm.ollama_client import OllamaClient
         return OllamaClient(config)
+    if provider == "nvidia":
+        from docintel.llm.nvidia_client import NvidiaClient
+        return NvidiaClient(config)
     raise ValueError(f"Unknown provider: '{provider}'")
 
 

@@ -1,1083 +1,631 @@
 # DocIntel
 
-Industrial Document Analysis Framework — ingest, chunk, embed, and query technical documents with one import.
+**Enterprise document intelligence platform — ingest, search, and query your documents with AI.**
 
-DocIntel is a RAG (Retrieval-Augmented Generation) toolkit for engineers and developers who need to ask questions over large sets of technical documents such as maintenance manuals, schematics, safety procedures, and log files. It supports multiple LLM providers, a PostgreSQL vector backend, an HTTP API server, structured logging, and optional knowledge-graph retrieval.
+DocIntel is a self-hosted RAG (Retrieval-Augmented Generation) platform for organizations that need to extract knowledge from large document collections. It combines a FastAPI backend, PostgreSQL + pgvector for vector storage, a Next.js web interface, multi-tenant access control, and pluggable LLM providers into a single deployable stack.
 
 ```python
-import os
 import docintel as di
 
-di.configure(gemini_api_key=os.environ["GEMINI_API_KEY"])
+di.configure(gemini_api_key="...")
 di.ingest("maintenance_manual.pdf")
 
 result = di.ask("What is the maximum operating pressure?")
-print(result.answer)
 # → "The maximum operating pressure is 10 bar [Source 1, page 4]."
-
-for source in result.sources:
-    print(source.score, source.chunk.metadata.get("page"), source.chunk.text[:120])
 ```
 
 ---
 
 ## Table of Contents
 
-1. [Features](#features)
-2. [Requirements](#requirements)
-3. [Installation](#installation)
-4. [Quickstart](#quickstart)
-5. [Python API Reference](#python-api-reference)
-6. [Configuration Reference](#configuration-reference)
-7. [HTTP Server](#http-server)
-8. [LLM Providers](#llm-providers)
-9. [Storage Backends](#storage-backends)
-10. [RAG Modes](#rag-modes)
-11. [Source Citations](#source-citations)
-12. [Multi-Tenancy](#multi-tenancy)
-13. [Security](#security)
-14. [Structured Logging](#structured-logging)
-15. [Metrics](#metrics)
-16. [Supported File Types](#supported-file-types)
-17. [Architecture](#architecture)
-18. [Development](#development)
-19. [License](#license)
+- [Features](#features)
+- [Architecture](#architecture)
+- [Quick Start — Docker Compose](#quick-start--docker-compose)
+- [Manual Setup](#manual-setup)
+- [Configuration](#configuration)
+- [LLM Providers](#llm-providers)
+- [OCR Support](#ocr-support)
+- [Pipeline Modes](#pipeline-modes)
+- [Python Library API](#python-library-api)
+- [HTTP Server](#http-server)
+- [Roles and Permissions](#roles-and-permissions)
+- [Knowledge Graph](#knowledge-graph)
+- [Documentation](#documentation)
 
 ---
 
 ## Features
 
-- **One-import API** — `configure`, `ingest`, `ingest_dir`, `ask`, `search`, `delete`, `stats`
-- **Class-based Pipeline** for explicit multi-tenant and multi-pipeline setups
-- **Multi-provider LLM support** — Google Gemini, OpenAI, Anthropic Claude, and local Ollama
-- **PDF page citations** — answers include `[Source N, page P]` markers grounded in the actual document
-- **Hierarchical chunking** — heading-aware with breadcrumb metadata for rich, navigable retrieval
-- **Contextual Retrieval** — optional document-level summarization prepended to each chunk before embedding
-- **In-memory vector store** with atomic JSON persistence for local and prototype use
-- **PostgreSQL + pgvector** backend for production-grade persistent vector search
-- **FastAPI HTTP server** with OpenAPI/Swagger UI, API key authentication, per-IP rate limiting, and path traversal protection
-- **LightRAG integration** for knowledge-graph-based retrieval (graph and hybrid modes)
-- **Structured JSON logging** with per-request correlation IDs and stage timings
-- **Thread-safe metrics** — counters for documents, chunks, queries, API calls, and retries
-- **Multi-tenancy** — every operation accepts a `tenant_id` to partition data into isolated namespaces
-- **64 tests** covering unit, integration, and security scenarios; no API key required for the test suite
-
----
-
-## Requirements
-
-- Python 3.10+
-- At least one LLM provider API key (Gemini, OpenAI, or Anthropic), or a running Ollama instance
-- PostgreSQL 14+ with the `pgvector` extension (only if using `vector_store="pgvector"`)
-- `uv` recommended for local development
-
----
-
-## Installation
-
-### From Source (Recommended for Development)
-
-```bash
-git clone https://github.com/your-org/docintel.git
-cd docintel
-uv sync --extra dev
-```
-
-### Install Extras
-
-Install only what you need:
-
-```bash
-# HTTP server (FastAPI + uvicorn)
-uv sync --extra server
-
-# OpenAI provider
-uv sync --extra openai
-
-# Anthropic provider
-uv sync --extra anthropic
-
-# PostgreSQL backend
-uv sync --extra postgres
-
-# LightRAG graph retrieval
-uv sync --extra graph
-
-# All extras at once
-uv sync --extra dev --extra server --extra openai --extra anthropic --extra postgres --extra graph
-```
-
-### Windows Note
-
-If your shell resolves to the Windows Store Python shim, pin uv explicitly:
-
-```powershell
-$env:UV_CACHE_DIR = ".uv-cache"
-$env:UV_PYTHON_INSTALL_DIR = ".uv-python"
-uv sync --python 3.12 --extra dev
-```
-
----
-
-## Quickstart
-
-### Gemini (default)
-
-```python
-import os
-import docintel as di
-
-di.configure(gemini_api_key=os.environ["GEMINI_API_KEY"])
-
-di.ingest("safety_manual.pdf")
-result = di.ask("What are the lockout-tagout steps?")
-print(result.answer)
-```
-
-### OpenAI
-
-```python
-from docintel import Pipeline
-
-p = Pipeline(
-    provider="openai",
-    openai_api_key=os.environ["OPENAI_API_KEY"],
-)
-p.ingest("hydraulic_manual.pdf")
-result = p.ask("What is the pump pressure limit?")
-print(result.answer)
-```
-
-### Anthropic Claude (generation) + OpenAI (embeddings)
-
-```python
-from docintel import Pipeline
-
-p = Pipeline(
-    provider="anthropic",
-    anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
-    embedding_provider="openai",
-    openai_api_key=os.environ["OPENAI_API_KEY"],
-)
-p.ingest("maintenance_procedure.pdf")
-result = p.ask("What are the preventive maintenance intervals?")
-print(result.answer)
-```
-
-### Local Ollama (no API key required)
-
-```python
-from docintel import Pipeline
-
-# Requires: ollama serve (running locally with llama3.2 + nomic-embed-text pulled)
-p = Pipeline(provider="ollama", ollama_base_url="http://localhost:11434")
-p.ingest("sop.pdf")
-result = p.ask("What PPE is required?")
-print(result.answer)
-```
-
-### Batch Ingestion
-
-```python
-from docintel import Pipeline
-
-p = Pipeline(
-    gemini_api_key=os.environ["GEMINI_API_KEY"],
-    persist_dir=".docintel",
-)
-
-docs = p.ingest_dir("manuals/", tenant_id="plant_a", recursive=True)
-print(f"Indexed {len(docs)} documents, {p.stats()['total_chunks']} chunks")
-```
-
-### Search Without Generation
-
-```python
-hits = di.search("hydraulic pump cavitation", tenant_id="plant_a", top_k=5)
-
-for hit in hits:
-    print(f"{hit.score:.3f} | page {hit.chunk.metadata.get('page')} | {hit.chunk.text[:200]}")
-```
-
----
-
-## Python API Reference
-
-### Module-Level API (`import docintel as di`)
-
-The module-level API uses an internal singleton pipeline, suitable for single-pipeline scripts.
-
----
-
-#### `di.configure(...) → Pipeline`
-
-Initialize the default pipeline. Call this once before using any other module-level function.
-
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `gemini_api_key` | `str` | — | Gemini API key (required when `provider="gemini"`) |
-| `provider` | `str` | `"gemini"` | LLM provider: `"gemini"`, `"openai"`, `"anthropic"`, `"ollama"` |
-| `embedding_provider` | `str \| None` | `None` | Override embedding provider (required for Anthropic) |
-| `openai_api_key` | `str \| None` | `None` | OpenAI API key |
-| `anthropic_api_key` | `str \| None` | `None` | Anthropic API key |
-| `ollama_base_url` | `str` | `"http://localhost:11434"` | Ollama server URL |
-| `generation_model` | `str \| None` | provider default | Model for answers and summaries |
-| `embedding_model` | `str \| None` | provider default | Model for embeddings |
-| `chunk_size` | `int` | `600` | Approximate words per chunk |
-| `chunk_overlap` | `int` | `80` | Word overlap between adjacent chunks |
-| `min_chunk_size` | `int` | `80` | Chunks smaller than this are discarded |
-| `top_k` | `int` | `5` | Default retrieval count per query |
-| `vector_store` | `str` | `"memory"` | Storage backend: `"memory"` or `"pgvector"` |
-| `persist_dir` | `str \| None` | `".docintel"` | Directory for JSON persistence (memory store) |
-| `db_url` | `str \| None` | `None` | PostgreSQL DSN (required for `pgvector`) |
-| `embed_batch_size` | `int` | `20` | Texts per embedding API call |
-| `max_retries` | `int` | `5` | Retry attempts for API calls |
-
-> **Note:** `di.configure()` only accepts `gemini_api_key` directly. For other providers, use `Pipeline(provider=..., ...)` directly.
-
----
-
-#### `di.ingest(path, ...) → Document`
-
-Extract, chunk, embed, and store a document.
-
-```python
-doc = di.ingest(
-    path="manual.pdf",
-    tenant_id="default",   # logical namespace
-    summarize=True,        # prepend document summary to each chunk for Contextual Retrieval
-    verbose=True,          # log each stage to stdout
-)
-```
-
-**Returns** a `Document` with:
-- `id` — UUID
-- `path` — resolved absolute path
-- `tenant_id`
-- `summary` — LLM-generated summary (if `summarize=True`)
-- `chunks` — list of `Chunk` objects
-- `metadata` — `{"file_name", "file_suffix", "file_size", "sha256"}`
-
----
-
-#### `di.ingest_dir(path, ...) → list[Document]`
-
-Ingest all supported files in a directory.
-
-```python
-docs = di.ingest_dir(
-    path="manuals/",
-    tenant_id="plant_a",
-    recursive=True,    # descend into subdirectories
-    summarize=True,
-    verbose=True,
-)
-```
-
-Files are processed in sorted path order. Unsupported extensions are skipped silently.
-
----
-
-#### `di.ask(question, ...) → QueryResult`
-
-Retrieve relevant chunks, then generate a grounded answer with inline source citations.
-
-```python
-result = di.ask(
-    question="What is the shutdown procedure?",
-    tenant_id="default",
-    top_k=None,    # uses config default (5) if None
-)
-
-print(result.answer)      # "Step 1: ... [Source 1, page 12]. Step 2: ... [Source 2, page 14]."
-print(result.sources)     # list[SearchResult]
-print(result.model)       # "gemini-2.5-flash"
-```
-
-If no documents are indexed, the answer is `"No relevant documents found. Please ingest documents first."`.
-
----
-
-#### `di.search(query, ...) → list[SearchResult]`
-
-Semantic similarity search. Returns ranked chunks without generating an answer.
-
-```python
-hits = di.search(query="pump pressure", tenant_id="default", top_k=5)
-
-for hit in hits:
-    print(hit.score)           # cosine similarity (0.0–1.0)
-    print(hit.document_path)   # absolute path to source file
-    print(hit.tenant_id)
-    print(hit.chunk.text)
-    print(hit.chunk.metadata)  # {"page", "breadcrumb", "doc_summary", ...}
-```
-
----
-
-#### `di.delete(path, tenant_id="default") → None`
-
-Remove all chunks for a specific document from the index.
-
-```python
-di.delete("old_manual.pdf", tenant_id="plant_a")
-```
-
----
-
-#### `di.stats() → dict`
-
-Return store statistics.
-
-```python
-di.stats()
-# {"total_chunks": 1842, "tenants": ["plant_a", "plant_b"]}
-```
-
----
-
-### Class-Based API (`Pipeline`)
-
-For multi-tenant setups, multiple independent pipelines, or when you need explicit control.
-
-```python
-from docintel import Pipeline, Config
-
-# Minimal construction
-p = Pipeline(gemini_api_key="YOUR_KEY")
-
-# Explicit Config object
-config = Config(
-    provider="openai",
-    openai_api_key="YOUR_KEY",
-    vector_store="pgvector",
-    db_url="postgresql://user:pass@localhost:5432/docintel",
-    chunk_size=400,
-    top_k=8,
-)
-p = Pipeline(config)
-```
-
-`Pipeline` exposes the same methods as the module-level API: `ingest`, `ingest_dir`, `ask`, `search`, `delete`, `stats`.
-
----
-
-## Configuration Reference
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `provider` | `str` | `"gemini"` | LLM provider |
-| `embedding_provider` | `str \| None` | `None` | Companion embedding provider (required for Anthropic) |
-| `gemini_api_key` | `str \| None` | — | Required when `provider="gemini"` |
-| `openai_api_key` | `str \| None` | — | Required when `provider="openai"` or `embedding_provider="openai"` |
-| `anthropic_api_key` | `str \| None` | — | Required when `provider="anthropic"` |
-| `ollama_base_url` | `str` | `"http://localhost:11434"` | Ollama server base URL |
-| `generation_model` | `str \| None` | provider default | Model for generation and summarization |
-| `embedding_model` | `str \| None` | provider default | Model for embeddings |
-| `summarization_model` | `str \| None` | `generation_model` | Reserved override for summarization model |
-| `chunk_size` | `int` | `600` | Approximate words per chunk |
-| `chunk_overlap` | `int` | `80` | Word overlap between adjacent chunks |
-| `min_chunk_size` | `int` | `80` | Minimum chunk size (smaller chunks discarded) |
-| `top_k` | `int` | `5` | Default retrieval count per query |
-| `vector_store` | `str` | `"memory"` | `"memory"` or `"pgvector"` |
-| `db_url` | `str \| None` | — | PostgreSQL DSN (required for `pgvector`) |
-| `persist_dir` | `str \| None` | `".docintel"` | JSON persistence directory (memory store) |
-| `embedding_dim` | `int \| None` | provider default | Embedding vector size (auto-resolved) |
-| `pg_pool_min` | `int` | `2` | Minimum PostgreSQL connections |
-| `pg_pool_max` | `int` | `10` | Maximum PostgreSQL connections |
-| `embed_batch_size` | `int` | `20` | Texts per embedding API call |
-| `max_retries` | `int` | `5` | Maximum retry attempts for API calls |
-| `rag_mode` | `str` | `"vector"` | Retrieval mode: `"vector"`, `"graph"`, `"hybrid"` |
-| `lightrag_dir` | `str` | `".docintel_graph"` | LightRAG working directory |
-| `api_key` | `str \| None` | `None` | Server API key (requires `X-API-Key` header) |
-| `allowed_ingest_dirs` | `list[str]` | `[]` | Restrict `/ingest` to these paths (empty = allow all) |
-| `rate_limit_rpm` | `int` | `0` | Per-IP rate limit in requests/minute (0 = disabled) |
-
-**Provider model defaults:**
-
-| Provider | Generation model | Embedding model | Embedding dim |
-|---|---|---|---|
-| `gemini` | `gemini-2.5-flash` | `gemini-embedding-001` | 3072 |
-| `openai` | `gpt-4o` | `text-embedding-3-large` | 3072 |
-| `anthropic` | `claude-opus-4-7` | _(delegates to embedding_provider)_ | — |
-| `ollama` | `llama3.2` | `nomic-embed-text` | 768 |
-
-Invalid configuration raises `ValueError` at startup with a descriptive message.
-
----
-
-## HTTP Server
-
-DocIntel ships with a FastAPI HTTP server that exposes all pipeline operations over REST. It includes OpenAPI/Swagger documentation, structured logging middleware, API key authentication, and per-IP rate limiting.
-
-### Start the Server
-
-**Gemini backend (simplest):**
-
-```bash
-python -m docintel.server \
-  --provider gemini \
-  --gemini-api-key YOUR_KEY \
-  --port 8000
-```
-
-**OpenAI backend with PostgreSQL:**
-
-```bash
-python -m docintel.server \
-  --provider openai \
-  --openai-api-key YOUR_KEY \
-  --backend pgvector \
-  --backend-url "postgresql://user:pass@localhost:5432/docintel" \
-  --port 8000
-```
-
-**Anthropic + OpenAI embeddings:**
-
-```bash
-python -m docintel.server \
-  --provider anthropic \
-  --anthropic-api-key YOUR_KEY \
-  --embedding-provider openai \
-  --openai-api-key YOUR_OPENAI_KEY \
-  --port 8000
-```
-
-**With security:**
-
-```bash
-python -m docintel.server \
-  --gemini-api-key YOUR_KEY \
-  --api-key "my-secret-token" \
-  --allowed-ingest-dirs /data/manuals /data/procedures \
-  --rate-limit-rpm 60 \
-  --port 8000
-```
-
-**All CLI flags:**
-
-| Flag | Default | Description |
-|---|---|---|
-| `--host` | `0.0.0.0` | Bind address |
-| `--port` | `8000` | Listen port |
-| `--provider` | `gemini` | LLM provider |
-| `--embedding-provider` | — | Companion embedding provider (for Anthropic) |
-| `--gemini-api-key` | — | Gemini API key |
-| `--openai-api-key` | — | OpenAI API key |
-| `--anthropic-api-key` | — | Anthropic API key |
-| `--ollama-base-url` | `http://localhost:11434` | Ollama URL |
-| `--backend` | `memory` | Storage: `memory` or `pgvector` |
-| `--backend-url` | — | PostgreSQL DSN (required for pgvector) |
-| `--persist-dir` | `.docintel` | JSON persistence directory |
-| `--rag-mode` | `vector` | Retrieval: `vector`, `graph`, `hybrid` |
-| `--lightrag-dir` | `.docintel_graph` | LightRAG working directory |
-| `--api-key` | — | Require `X-API-Key` on all routes except `/health` |
-| `--allowed-ingest-dirs` | _(all)_ | Whitelist directories for `/ingest` |
-| `--rate-limit-rpm` | `0` | Per-IP rate limit (0 = off) |
-| `--log-level` | `INFO` | Log level |
-| `--log-json` | enabled | Emit structured JSON logs |
-
-### Interactive API Docs
-
-Once the server is running, open:
-
-- **Swagger UI:** `http://localhost:8000/docs`
-- **ReDoc:** `http://localhost:8000/redoc`
-
-### Endpoints
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/health` | Health check (no auth required) |
-| `POST` | `/ingest` | Ingest a document |
-| `POST` | `/search` | Semantic search |
-| `POST` | `/ask` | RAG question answering |
-| `DELETE` | `/documents/{doc_id}` | Delete a document |
-| `GET` | `/stats` | Store and metrics statistics |
-
----
-
-### `GET /health`
-
-No authentication required. Used for load-balancer health checks.
-
-```bash
-curl http://localhost:8000/health
-```
-
-```json
-{
-  "status": "ok",
-  "store_backend": "pgvector",
-  "metrics": {
-    "docs_ingested": 12,
-    "chunks_indexed": 3840,
-    "queries": 47,
-    "embed_api_calls": 195,
-    "retries": 0,
-    "uptime_seconds": 3600
-  }
-}
-```
-
----
-
-### `POST /ingest`
-
-```bash
-curl -X POST http://localhost:8000/ingest \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: my-secret-token" \
-  -d '{"path": "/data/manuals/pump_manual.pdf", "tenant_id": "plant_a"}'
-```
-
-**Request body:**
-
-```json
-{
-  "path": "/absolute/path/to/document.pdf",
-  "tenant_id": "default",
-  "summarize": true
-}
-```
-
-**Response:**
-
-```json
-{
-  "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  "path": "/absolute/path/to/document.pdf",
-  "tenant_id": "default",
-  "summary": "This manual covers...",
-  "metadata": {
-    "file_name": "document.pdf",
-    "file_suffix": ".pdf",
-    "file_size": 204800,
-    "sha256": "a1b2c3..."
-  },
-  "chunk_count": 148
-}
-```
-
-> **Security note:** When `--allowed-ingest-dirs` is configured, paths outside those directories return HTTP 403. All paths are resolved with `os.path.realpath()` to prevent symlink-based traversal.
-
----
-
-### `POST /search`
-
-```bash
-curl -X POST http://localhost:8000/search \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: my-secret-token" \
-  -d '{"query": "pump pressure limit", "tenant_id": "plant_a", "top_k": 5}'
-```
-
-**Request body:**
-
-```json
-{
-  "query": "pump pressure limit",
-  "tenant_id": "default",
-  "top_k": 5
-}
-```
-
-**Response:** Array of `SearchResult` objects with `chunk`, `score`, `document_path`, `tenant_id`.
-
----
-
-### `POST /ask`
-
-```bash
-curl -X POST http://localhost:8000/ask \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: my-secret-token" \
-  -d '{"question": "What is the maximum operating pressure?", "tenant_id": "plant_a"}'
-```
-
-**Request body:**
-
-```json
-{
-  "question": "What is the maximum operating pressure?",
-  "tenant_id": "default",
-  "top_k": null
-}
-```
-
-**Response:**
-
-```json
-{
-  "question": "What is the maximum operating pressure?",
-  "answer": "The maximum operating pressure is 10 bar [Source 1, page 4].",
-  "sources": [...],
-  "model": "gemini-2.5-flash"
-}
-```
-
----
-
-### `DELETE /documents/{doc_id}`
-
-```bash
-curl -X DELETE "http://localhost:8000/documents/path%2Fto%2Fdoc.pdf?tenant_id=plant_a" \
-  -H "X-API-Key: my-secret-token"
-```
-
-Returns HTTP 204 on success.
-
----
-
-### `GET /stats`
-
-```bash
-curl http://localhost:8000/stats -H "X-API-Key: my-secret-token"
-```
-
-```json
-{
-  "total_chunks": 3840,
-  "tenants": ["plant_a", "plant_b"],
-  "store": null
-}
-```
-
----
-
-## LLM Providers
-
-### Google Gemini
-
-Default provider. Requires a Gemini API key from [Google AI Studio](https://aistudio.google.com/).
-
-```python
-Pipeline(provider="gemini", gemini_api_key="YOUR_KEY")
-```
-
-- Generation: `gemini-2.5-flash` (default)
-- Embeddings: `gemini-embedding-001` (3072-dim)
-- Includes automatic retry with exponential backoff
-
-### OpenAI
-
-```bash
-pip install 'docintel[openai]'
-```
-
-```python
-Pipeline(provider="openai", openai_api_key="YOUR_KEY")
-```
-
-- Generation: `gpt-4o` (default)
-- Embeddings: `text-embedding-3-large` (3072-dim)
-
-### Anthropic Claude
-
-Anthropic does not provide an embeddings API. You must specify a companion `embedding_provider`.
-
-```bash
-pip install 'docintel[anthropic,openai]'
-```
-
-```python
-Pipeline(
-    provider="anthropic",
-    anthropic_api_key="YOUR_KEY",
-    embedding_provider="openai",       # or "ollama"
-    openai_api_key="YOUR_OPENAI_KEY",
-)
-```
-
-- Generation: `claude-opus-4-7` (default)
-- Embeddings: delegated to `embedding_provider`
-
-### Ollama (Local, No API Key)
-
-Run models locally with no network dependency or API cost.
-
-```bash
-# Install Ollama: https://ollama.com
-ollama serve
-ollama pull llama3.2
-ollama pull nomic-embed-text
-```
-
-```python
-Pipeline(provider="ollama", ollama_base_url="http://localhost:11434")
-```
-
-- Generation: `llama3.2` (default)
-- Embeddings: `nomic-embed-text` (768-dim)
-- Override any model name via `generation_model` and `embedding_model` fields
-
----
-
-## Storage Backends
-
-### In-Memory (default)
-
-Vectors are held in process memory and saved to a versioned JSON file on every write. Suitable for local tools, development, and small document sets.
-
-```python
-Pipeline(gemini_api_key="KEY", vector_store="memory", persist_dir=".docintel")
-```
-
-Index is saved to `.docintel/docintel_index.json` using atomic file writes. It is loaded automatically on startup.
-
-**Limitations:** not suitable for concurrent multi-process deployments, datasets larger than available RAM, or high-availability requirements.
-
-### PostgreSQL + pgvector
-
-Production-grade persistent vector search. Requires PostgreSQL 14+ with the `pgvector` extension.
-
-```bash
-pip install 'docintel[postgres]'
-```
-
-```python
-Pipeline(
-    gemini_api_key="KEY",
-    vector_store="pgvector",
-    db_url="postgresql://user:pass@localhost:5432/docintel",
-)
-```
-
-The schema is auto-migrated on first connect (idempotent DDL). The store uses `HNSW` indexing for approximate nearest-neighbor search and a `ThreadedConnectionPool` for concurrent access.
-
-**Features:**
-- Persistent across restarts
-- Multi-process safe
-- Tenant-partitioned queries
-- `ON CONFLICT ... DO UPDATE` for duplicate chunk handling
-- Connection pooling (2 min / 10 max by default)
-
----
-
-## RAG Modes
-
-DocIntel supports three retrieval strategies controlled by `rag_mode`.
-
-### `"vector"` (default)
-
-Standard vector similarity search. Fast, accurate for well-structured documents.
-
-```python
-Pipeline(gemini_api_key="KEY", rag_mode="vector")
-```
-
-### `"graph"` — LightRAG Knowledge Graph
-
-Uses LightRAG to extract a knowledge graph from documents and answer questions using entity/relationship reasoning. Better for questions requiring multi-hop reasoning across many documents.
-
-```bash
-pip install 'docintel[graph]'
-```
-
-```python
-Pipeline(
-    gemini_api_key="KEY",
-    rag_mode="graph",
-    lightrag_dir=".docintel_graph",
-)
-```
-
-Answers use LightRAG's internal hybrid retrieval. `sources` in the `QueryResult` is empty (no per-chunk citations in this mode).
-
-### `"hybrid"` — LightRAG Answer + Vector Citations
-
-Generates the answer using LightRAG's reasoning while also returning vector-based `sources` for citations and grounding.
-
-```python
-Pipeline(gemini_api_key="KEY", rag_mode="hybrid")
-```
-
----
-
-## Source Citations
-
-In `"vector"` and `"hybrid"` RAG modes, the LLM is instructed to include inline source citations in its answer:
-
-```
-The maximum operating pressure is 10 bar [Source 1, page 4].
-Emergency shutdown is described in section 3.2 [Source 2, page 18].
-```
-
-Citations follow the format `[Source N]` or `[Source N, page P]` where the page number is drawn from the document's actual page metadata. For text files, the page number is a 1-indexed paragraph segment number.
-
-The `sources` list in `QueryResult` and `/ask` responses maps `Source N` to its actual chunk, document path, page, and similarity score.
-
----
-
-## Multi-Tenancy
-
-Every indexing, search, and query operation accepts a `tenant_id`. Data is partitioned by tenant so one tenant's documents never appear in another tenant's results.
-
-```python
-# Ingest into separate tenants
-di.ingest("plant_a_manual.pdf", tenant_id="plant_a")
-di.ingest("plant_b_manual.pdf", tenant_id="plant_b")
-
-# Results are isolated
-di.ask("What is the pressure limit?", tenant_id="plant_a")
-di.ask("What is the pressure limit?", tenant_id="plant_b")
-
-# Delete only from one tenant
-di.delete("plant_a_manual.pdf", tenant_id="plant_a")
-```
-
-**Memory store:** tenant isolation is logical — all chunks share one JSON file, partitioned by `tenant_id` key. This is not a security boundary; it prevents cross-tenant results within the library.
-
-**pgvector:** tenant isolation is enforced at the SQL level with a `tenant_id TEXT NOT NULL` column and filtered queries.
-
----
-
-## Security
-
-DocIntel's HTTP server includes three security features:
-
-### API Key Authentication
-
-When `--api-key` is set, every request (except `GET /health`) must include the header:
-
-```
-X-API-Key: your-secret-token
-```
-
-Comparison uses `hmac.compare_digest` to prevent timing attacks. Missing or incorrect keys return HTTP 403.
-
-```bash
-python -m docintel.server --gemini-api-key KEY --api-key "my-secret-token"
-```
-
-### Path Traversal Prevention
-
-When `--allowed-ingest-dirs` is set, the `/ingest` endpoint rejects any path that is not inside one of the configured directories. All paths are resolved with `os.path.realpath()` before comparison, which resolves symlinks and prevents traversal via `../` sequences.
-
-```bash
-python -m docintel.server \
-  --gemini-api-key KEY \
-  --allowed-ingest-dirs /data/manuals /data/procedures
-```
-
-Requests to paths outside these directories return HTTP 403.
-
-### Per-IP Rate Limiting
-
-When `--rate-limit-rpm` is set to a positive integer, requests from a single client IP are limited to that many requests per minute using a sliding-window counter. Requests exceeding the limit return HTTP 429 with a `Retry-After` header.
-
-```bash
-python -m docintel.server --gemini-api-key KEY --rate-limit-rpm 60
-```
-
-The `GET /health` endpoint is exempt from rate limiting to allow load-balancer checks.
-
----
-
-## Structured Logging
-
-DocIntel emits structured JSON logs from the pipeline and server. Each log entry includes a `correlation_id` for end-to-end request tracing, stage timings in milliseconds, and context fields such as `tenant_id`, `path`, and `chunks`.
-
-```bash
-python -m docintel.server --gemini-api-key KEY --log-level INFO
-```
-
-Example log line (formatted for readability):
-
-```json
-{
-  "time": "2026-05-09T12:00:01.234Z",
-  "level": "INFO",
-  "logger": "docintel._pipeline",
-  "msg": "ingest_done",
-  "correlation_id": "3fa85f64-5717-4562-b3fc",
-  "path": "/data/manuals/pump.pdf",
-  "tenant": "plant_a",
-  "chunks": 148,
-  "ms": 4120
-}
-```
-
-Every HTTP request automatically receives a `correlation_id` from the `X-Correlation-Id` request header (or a newly generated UUID if absent). The same ID is returned in the `X-Correlation-Id` response header and in all logs for that request.
-
-**Enable from Python:**
-
-```python
-from docintel import configure_logging
-configure_logging(level="INFO", json_format=True)
-```
-
----
-
-## Metrics
-
-DocIntel tracks runtime metrics using a thread-safe in-process counter.
-
-```python
-from docintel import get_metrics
-print(get_metrics())
-```
-
-```json
-{
-  "docs_ingested": 12,
-  "chunks_indexed": 3840,
-  "queries": 47,
-  "embed_api_calls": 195,
-  "retries": 0,
-  "uptime_seconds": 3600
-}
-```
-
-Metrics are also returned by `GET /health` and `GET /stats`. The counters reset on server restart. A Prometheus adapter can wrap `get_metrics()` without changes to the core counters.
-
----
-
-## Supported File Types
-
-| Extension | Extractor | Notes |
-|---|---|---|
-| `.pdf` | `PdfExtractor` | Text-based PDFs. Page numbers are 1-indexed PDF page numbers. |
-| `.txt` | `TextExtractor` | Split by blank lines. Segment number used as page. |
-| `.md` | `TextExtractor` | Markdown. |
-| `.rst` | `TextExtractor` | reStructuredText. |
-| `.log` | `TextExtractor` | Log files. |
-
-Scanned PDFs require OCR (not yet implemented). CAD/DXF extraction is on the roadmap.
+| Category | Capability |
+|---|---|
+| **Ingestion** | PDF, Word, Excel, PowerPoint, CSV, Markdown, HTML, plain text |
+| **OCR** | Scanned PDFs and image files (PNG, JPG, TIFF, BMP, WebP) via Tesseract |
+| **LLM Providers** | Google Gemini, OpenAI, Anthropic Claude, NVIDIA NIM, Ollama (local) |
+| **Retrieval** | Semantic vector search (pgvector cosine), optional knowledge graph (LightRAG) |
+| **Pipeline Modes** | Single LLM answer, or Writer + Reviewer (two sequential calls for higher accuracy) |
+| **Multi-tenancy** | Per-organisation data isolation, collection namespaces |
+| **Auth** | JWT access tokens (1 h) + refresh tokens (7 d), bcrypt passwords, invite flow |
+| **API Key Vault** | Per-provider encrypted key storage (Fernet AES-128) |
+| **Frontend** | Next.js 14 web app — Ask AI, Documents, Search, Knowledge Graph, History, Admin |
+| **Storage** | In-memory JSON (dev) or PostgreSQL 16 + pgvector (production) |
+| **Observability** | Structured JSON logs, correlation IDs, per-org metrics |
+| **Security** | CORS, per-IP rate limiting, path-traversal protection, bcrypt-12 |
 
 ---
 
 ## Architecture
 
 ```
-Document file
-      │
-      ▼
-  Extractor  ──── page-level text with page numbers
-      │
-      ▼
- Summarizer  ──── LLM-generated document summary (Contextual Retrieval)
-      │
-      ▼
-HierarchicalChunker  ──── heading-aware chunks with breadcrumb metadata
-      │
-      ▼
-   Embedder  ──── batched embedding API calls
-      │
-      ▼
- VectorStore  ──── memory (JSON) or pgvector (PostgreSQL)
-                         │
-         ┌───────────────┘
-         │
-Question ─► EmbedQuery ─► VectorSearch ─► BuildContext ─► LLM Answer
-                                                │
-                                                └── [Source N, page P] citations
+┌─────────────────────────────────────────────────────────────────────┐
+│  Browser / Client                                                   │
+│  Next.js 14 (port 3000)                                             │
+│  Ask AI · Documents · Search · Graph · History · Admin              │
+└───────────────────────────────┬─────────────────────────────────────┘
+                                │ HTTP / REST
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  FastAPI Backend (port 8000)                                        │
+│                                                                     │
+│  ┌─────────────┐  ┌──────────────┐  ┌──────────────────────────┐  │
+│  │ Auth Routes │  │  Doc Routes  │  │ Admin / Superadmin Routes│  │
+│  │  /auth/*    │  │  /upload     │  │  /admin/*  /superadmin/* │  │
+│  │  JWT + bcrypt│  │  /ask /search│  │  Org mgmt, settings, keys│  │
+│  └─────────────┘  └──────────────┘  └──────────────────────────┘  │
+│                                                                     │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │  Pipeline Registry (per-org Pipeline instance cache)         │  │
+│  │                                                              │  │
+│  │  Extractor → Chunker → Embedder → VectorStore                │  │
+│  │  PDF / DOCX / XLSX / PPTX / HTML / CSV / TXT / Images (OCR) │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                                                                     │
+│  ┌──────────────┐  ┌────────────────────────────────────────────┐  │
+│  │  LLM Client  │  │  LightRAG (optional)                       │  │
+│  │  Gemini      │  │  Entity/relation extraction                │  │
+│  │  OpenAI      │  │  GraphML + vector DBs                      │  │
+│  │  Anthropic   │  │  Local / global / hybrid / naive query     │  │
+│  │  NVIDIA NIM  │  └────────────────────────────────────────────┘  │
+│  │  Ollama      │                                                   │
+│  └──────────────┘                                                   │
+└──────────────────────────────────┬──────────────────────────────────┘
+                                   │
+              ┌────────────────────┴────────────────────┐
+              ▼                                         ▼
+ ┌────────────────────────┐               ┌──────────────────────────┐
+ │  PostgreSQL 16          │               │  Local filesystem         │
+ │  + pgvector extension  │               │  .docintel/uploads/       │
+ │                        │               │  .docintel_graph/         │
+ │  docintel_chunks        │               │  (Docker volumes in prod) │
+ │  organizations          │               └──────────────────────────┘
+ │  users / invitations   │
+ │  document_library      │
+ │  query_history         │
+ └────────────────────────┘
 ```
 
-**Optional LightRAG path (graph / hybrid mode):**
+---
+
+## Quick Start — Docker Compose
+
+**Prerequisites:** Docker and Docker Compose, plus at least one LLM API key.
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/your-org/docintel.git
+cd docintel
+
+# 2. Create the environment file
+cp .env.example .env
+```
+
+Edit `.env` and set at minimum:
+
+```env
+SECRET_KEY=<output of: python -c "import secrets; print(secrets.token_urlsafe(32))">
+GEMINI_API_KEY=your_key_here          # or OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.
+DEFAULT_PROVIDER=gemini               # matches the key you provided
+```
+
+```bash
+# 3. Start all services
+docker compose up -d
+
+# 4. Wait for the API to be healthy
+docker compose logs -f api            # Ctrl-C when you see "Application startup complete"
+
+# 5. Create the first super-admin account
+curl -s -X POST http://localhost:8000/superadmin/bootstrap \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@company.com","password":"changeme","full_name":"Platform Admin"}'
+
+# 6. Open the web UI
+open http://localhost:3000
+```
+
+> **First-time setup in the UI:**
+> 1. Log in with your super-admin credentials
+> 2. Go to **Admin → Settings** to configure your LLM provider and save API keys
+> 3. Go to **Documents** to upload your first file
+> 4. Go to **Ask AI** and start querying
+
+---
+
+## Manual Setup
+
+### Backend
+
+**Requirements:** Python 3.10+, PostgreSQL 16 with the `vector` extension
+
+```bash
+# Install core + server dependencies
+pip install -e ".[server,postgres,office,ocr]"
+
+# For knowledge graph support (optional, installs torch + lightrag)
+pip install -e ".[graph]"
+
+# For additional LLM providers
+pip install -e ".[openai,anthropic]"
+
+# OCR requires the Tesseract binary and poppler (for scanned PDFs)
+# Ubuntu / Debian:
+sudo apt-get install tesseract-ocr tesseract-ocr-eng poppler-utils
+# macOS:
+brew install tesseract poppler
+```
+
+**Start the server:**
+
+```bash
+python -m docintel.server \
+  --backend pgvector \
+  --db-url postgresql://docintel:docintel@localhost:5432/docintel \
+  --secret-key "$(python -c 'import secrets; print(secrets.token_urlsafe(32))')" \
+  --provider gemini \
+  --gemini-api-key "$GEMINI_API_KEY" \
+  --cors-origins http://localhost:3000 \
+  --port 8000
+```
+
+### Frontend
+
+**Requirements:** Node.js 18+
+
+```bash
+cd web
+npm install
+
+# Development
+NEXT_PUBLIC_API_URL=http://localhost:8000 npm run dev
+
+# Production build
+npm run build && npm start
+```
+
+---
+
+## Configuration
+
+### Environment Variables (`.env`)
+
+| Variable | Required | Description |
+|---|---|---|
+| `SECRET_KEY` | **Yes** | 32-byte random string — signs JWTs and encrypts API keys. **Must be stable across restarts.** |
+| `POSTGRES_USER` | Yes (prod) | PostgreSQL username |
+| `POSTGRES_PASSWORD` | Yes (prod) | PostgreSQL password |
+| `POSTGRES_DB` | Yes (prod) | PostgreSQL database name |
+| `DATABASE_URL` | Yes (prod) | Full DSN, e.g. `postgresql://user:pass@host:5432/db` |
+| `DEFAULT_PROVIDER` | No | Default LLM provider: `gemini` / `openai` / `anthropic` / `nvidia` / `ollama` |
+| `GEMINI_API_KEY` | No | Google Gemini API key |
+| `OPENAI_API_KEY` | No | OpenAI API key |
+| `ANTHROPIC_API_KEY` | No | Anthropic API key |
+| `NVIDIA_API_KEY` | No | NVIDIA NIM API key |
+
+### Server CLI Flags
 
 ```
-Document text ─► LightRAG.insert() ─► Knowledge Graph (entities + relations)
-                                              │
-Question ──────────────────────────► LightRAG.query() ─► Graph-grounded answer
+python -m docintel.server [OPTIONS]
+
+  --host                HOST      Bind address (default: 0.0.0.0)
+  --port                PORT      Listen port (default: 8000)
+  --secret-key          KEY       JWT/Fernet secret (auto-generate if omitted — unstable)
+  --provider            PROVIDER  LLM provider: gemini|openai|anthropic|ollama|nvidia
+  --embedding-provider  PROVIDER  Override embedding provider (required for Anthropic)
+  --gemini-api-key      KEY       Gemini API key (falls back to GEMINI_API_KEY env var)
+  --openai-api-key      KEY       OpenAI API key (falls back to OPENAI_API_KEY env var)
+  --anthropic-api-key   KEY       Anthropic API key (falls back to ANTHROPIC_API_KEY env var)
+  --nvidia-api-key      KEY       NVIDIA NIM API key (falls back to NVIDIA_API_KEY env var)
+  --backend             BACKEND   Vector store: memory|pgvector (default: memory)
+  --db-url              DSN       PostgreSQL DSN — required for pgvector + auth
+  --persist-dir         DIR       JSON persistence directory (default: .docintel)
+  --rag-mode            MODE      Retrieval: vector|graph|hybrid (default: vector)
+  --lightrag-dir        DIR       LightRAG working directory (default: .docintel_graph)
+  --allowed-ingest-dirs DIR,...   Comma-separated whitelist for /ingest (empty = all)
+  --rate-limit-rpm      N         Per-IP rate limit requests/minute (0 = disabled)
+  --cors-origins        URL,...   Allowed CORS origins (default: http://localhost:3000)
+  --log-level           LEVEL     INFO|DEBUG|WARNING|ERROR (default: INFO)
+  --log-json            BOOL      Structured JSON logs (default: true)
 ```
 
-**Key modules:**
+### Config Dataclass (`docintel.Config`)
 
-| Module | Responsibility |
+Key fields available when using the Python library directly:
+
+| Field | Default | Description |
+|---|---|---|
+| `provider` | `"gemini"` | LLM provider |
+| `chunk_size` | `600` | Approximate words per chunk |
+| `chunk_overlap` | `80` | Overlap words between adjacent chunks |
+| `min_chunk_size` | `80` | Discard chunks smaller than this |
+| `top_k` | `5` | Default number of retrieved chunks |
+| `vector_store` | `"memory"` | `"memory"` or `"pgvector"` |
+| `embed_batch_size` | `20` | Texts per embedding API call |
+| `max_retries` | `5` | API retry attempts |
+| `rag_mode` | `"vector"` | `"vector"` / `"graph"` / `"hybrid"` |
+| `pipeline_mode` | `"single"` | `"single"` or `"writer_reviewer"` |
+| `ocr_enabled` | `True` | Auto-OCR scanned PDF pages |
+| `ocr_min_chars_per_page` | `50` | Characters threshold below which a page is treated as scanned |
+
+---
+
+## LLM Providers
+
+Each organization can configure and store keys for any number of providers simultaneously. Keys are encrypted with AES-128 (Fernet) before storage.
+
+| Provider | Generation Model (default) | Embedding Model (default) | Notes |
+|---|---|---|---|
+| `gemini` | `gemini-2.5-flash` | `gemini-embedding-001` (3072d) | Best default choice |
+| `openai` | `gpt-4o` | `text-embedding-3-large` (3072d) | |
+| `anthropic` | `claude-opus-4-7` | — | Requires `--embedding-provider openai` or `ollama` |
+| `nvidia` | `meta/llama-3.1-70b-instruct` | `nvidia/nv-embedqa-e5-v5` (1024d) | Requires NVIDIA NIM account |
+| `ollama` | `llama3.2` | `nomic-embed-text` (768d) | Self-hosted, no API key needed |
+
+**Changing the active provider:**
+
+Via the web UI: **Admin → Settings → Active provider**
+
+Via API:
+```bash
+curl -X PATCH http://localhost:8000/admin/settings \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"llm_provider": "openai", "openai_api_key": "sk-..."}'
+```
+
+> Changing the provider invalidates the pipeline cache immediately. The next request rebuilds the pipeline with the new provider.
+
+---
+
+## OCR Support
+
+DocIntel automatically handles scanned documents and image files without any extra configuration.
+
+### Scanned PDFs
+
+When a PDF page yields fewer than 50 characters of text, it is automatically re-processed with Tesseract OCR. Text-rich pages use direct extraction; OCR only runs on sparse/image pages.
+
+```
+PDF upload → pypdf extraction (per page)
+  ├── Page has ≥ 50 chars  →  use extracted text directly
+  └── Page has < 50 chars  →  pdf2image (200 DPI) → Tesseract → OCR text
+```
+
+### Image Uploads
+
+The following image formats can be uploaded directly as documents. Text is extracted entirely via OCR.
+
+| Format | Extension |
 |---|---|
-| `docintel/_pipeline.py` | Orchestrates ingest, search, ask, delete |
-| `docintel/_config.py` | Dataclass config with validation |
-| `docintel/core/entities.py` | `Document`, `Chunk`, `SearchResult`, `QueryResult` |
-| `docintel/extractors/` | PDF and text file extraction |
-| `docintel/processing/chunker.py` | Hierarchical heading-aware chunking |
-| `docintel/processing/embedder.py` | Batched embedding |
-| `docintel/llm/base.py` | `BaseLLMClient` ABC |
-| `docintel/llm/gemini.py` | Gemini client with retry |
-| `docintel/llm/openai_client.py` | OpenAI client |
-| `docintel/llm/anthropic_client.py` | Anthropic client (generation only) |
-| `docintel/llm/ollama_client.py` | Ollama local client |
-| `docintel/storage/memory.py` | In-memory + JSON persistence |
-| `docintel/storage/pgvector.py` | PostgreSQL + pgvector |
-| `docintel/lightrag_index.py` | LightRAG knowledge graph wrapper |
-| `docintel/logging.py` | Structured JSON logging + correlation IDs |
-| `docintel/metrics.py` | Thread-safe counters |
-| `docintel/server/app.py` | FastAPI app factory with lifespan |
-| `docintel/server/routes.py` | HTTP endpoint handlers |
-| `docintel/server/middleware.py` | Auth, rate limiting, correlation ID |
-| `docintel/server/schemas.py` | Pydantic request/response models |
+| JPEG | `.jpg`, `.jpeg` |
+| PNG | `.png` |
+| TIFF (multi-page) | `.tiff`, `.tif` |
+| BMP | `.bmp` |
+| WebP | `.webp` |
+| GIF | `.gif` |
+
+Multi-page TIFF files produce one searchable chunk per frame.
+
+### OCR Requirements
+
+OCR requires the Tesseract binary and poppler utilities to be installed on the server:
+
+```bash
+# Ubuntu / Debian / Docker
+apt-get install tesseract-ocr tesseract-ocr-eng poppler-utils
+
+# macOS
+brew install tesseract poppler
+```
+
+These are pre-installed in the provided `Dockerfile.api`. For additional languages:
+
+```bash
+# Example: add German and French OCR support
+apt-get install tesseract-ocr-deu tesseract-ocr-fra
+```
+
+To disable OCR (for performance or when not needed):
+
+```python
+di.configure(ocr_enabled=False)
+```
+
+---
+
+## Pipeline Modes
+
+The pipeline mode controls how LLM calls are orchestrated when answering questions.
+
+### Single LLM (default)
+
+One model call generates the answer directly from retrieved context. Fastest and most cost-efficient.
+
+```
+User question + retrieved chunks → LLM → Answer
+```
+
+### Writer + Reviewer
+
+Two sequential LLM calls for higher accuracy and better citation handling:
+
+1. **Writer**: Drafts an answer from the retrieved context
+2. **Reviewer**: Fact-checks the draft against the original context, corrects citations, and improves completeness
+
+```
+User question + context → Writer LLM → Draft
+Draft + context         → Reviewer LLM → Final answer
+```
+
+Configure per organisation via **Admin → Settings → Pipeline configuration**, or via API:
+
+```bash
+curl -X PATCH http://localhost:8000/admin/settings \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"pipeline_mode": "writer_reviewer"}'
+```
+
+---
+
+## Python Library API
+
+DocIntel can also be used as a standalone Python library without the HTTP server.
+
+### Installation
+
+```bash
+pip install -e ".[office]"   # for DOCX/XLSX/PPTX support
+pip install -e ".[ocr]"      # for OCR support (also needs tesseract binary)
+```
+
+### Module-level API
+
+```python
+import docintel as di
+
+# Configure once per process
+di.configure(
+    provider="gemini",
+    gemini_api_key="AIza...",
+    chunk_size=600,
+    top_k=5,
+)
+
+# Ingest a document
+doc = di.ingest("report.pdf")
+print(f"Ingested {doc.chunk_count} chunks")
+
+# Ask a question
+result = di.ask("What were the key findings?")
+print(result.answer)
+for s in result.sources:
+    print(f"  [{s.score:.2%}] page {s.chunk.metadata.get('page')} — {s.chunk.text[:80]}")
+
+# Semantic search (returns chunks without generation)
+results = di.search("operating temperature range")
+for r in results:
+    print(r.score, r.chunk.text[:100])
+
+# Clean up
+di.delete("report.pdf")
+```
+
+### Class-based API
+
+```python
+from docintel import Pipeline
+from docintel._config import Config
+
+config = Config(
+    provider="openai",
+    openai_api_key="sk-...",
+    vector_store="pgvector",
+    db_url="postgresql://user:pass@localhost:5432/db",
+    chunk_size=800,
+    top_k=8,
+    pipeline_mode="writer_reviewer",
+)
+
+pipeline = Pipeline(config)
+
+# Ingest with collection namespacing
+pipeline.ingest("safety_manual.pdf", tenant_id="acme:safety")
+
+# Query within a specific collection
+result = pipeline.ask(
+    "What PPE is required for zone 3?",
+    tenant_id="acme:safety",
+)
+print(result.answer)
+
+# Multi-document search with doc_id filter
+results = pipeline.search(
+    "emergency shutdown procedure",
+    tenant_id="acme:safety",
+    doc_ids=["doc-uuid-1", "doc-uuid-2"],
+)
+```
+
+### Supported Formats (Python API)
+
+| Category | Extensions |
+|---|---|
+| PDF | `.pdf` |
+| Office | `.docx`, `.doc`, `.xlsx`, `.xls`, `.pptx`, `.ppt` |
+| Text | `.txt`, `.md`, `.rst`, `.log` |
+| Data | `.csv` |
+| Web | `.html`, `.htm` |
+| Images (OCR) | `.png`, `.jpg`, `.jpeg`, `.tiff`, `.tif`, `.bmp`, `.webp`, `.gif` |
+
+---
+
+## HTTP Server
+
+The REST API is available at `http://localhost:8000`. Interactive Swagger UI is at `/docs`.
+
+### Authentication
+
+All endpoints (except `/health`, `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/accept-invite`, and `/superadmin/bootstrap`) require a valid JWT access token:
+
+```
+Authorization: Bearer <access_token>
+```
+
+Tokens expire after **1 hour**. Use the refresh endpoint to obtain a new access token with your 7-day refresh token.
+
+### Core Endpoints
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/health` | None | Liveness check |
+| `POST` | `/auth/register` | None | Create org + admin user |
+| `POST` | `/auth/login` | None | Authenticate, get tokens |
+| `POST` | `/auth/refresh` | None | Exchange refresh token |
+| `GET` | `/auth/me` | Bearer | Current user profile |
+| `POST` | `/upload` | Bearer | Upload a file (background ingest) |
+| `GET` | `/documents` | Bearer | List documents |
+| `DELETE` | `/documents/{id}` | Bearer | Delete document |
+| `GET` | `/documents/{id}/file` | Bearer | Stream file (PDF inline) |
+| `POST` | `/ask` | Bearer | RAG question answering |
+| `POST` | `/search` | Bearer | Semantic vector search |
+| `GET` | `/history` | Bearer | Query history |
+| `GET` | `/admin/settings` | Admin | Org LLM configuration |
+| `PATCH` | `/admin/settings` | Admin | Update org configuration |
+| `POST` | `/admin/settings/validate` | Admin | Test active API key |
+| `GET` | `/admin/users` | Admin | Team members + invitations |
+| `POST` | `/auth/invite` | Admin | Send invitation email token |
+| `POST` | `/superadmin/bootstrap` | None* | Create first superadmin |
+
+*One-time only — returns 409 if a superadmin already exists.
+
+Full API reference: [docs/api.md](docs/api.md)
+
+### Example: Upload and Ask
+
+```bash
+# Upload a document
+curl -X POST http://localhost:8000/upload \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@report.pdf" \
+  -F "collection_id=default"
+
+# Ask a question
+curl -X POST http://localhost:8000/ask \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "What is the maximum load capacity?",
+    "tenant_id": "org-uuid:default"
+  }'
+```
+
+---
+
+## Roles and Permissions
+
+| Role | Scope | Capabilities |
+|---|---|---|
+| `superadmin` | Platform | Manage all organisations, users, and platform settings |
+| `org_admin` | Organisation | Manage team, configure LLM/keys, upload/delete documents |
+| `manager` | Organisation | Upload and delete documents, run queries |
+| `user` | Organisation | Upload documents, run queries |
+| `viewer` | Organisation | Run queries only (no upload) |
+
+**Inviting a team member:**
+
+```bash
+# Generate invite token (org_admin or above)
+curl -X POST http://localhost:8000/auth/invite \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"email": "colleague@company.com", "role": "user"}'
+
+# The invitee accepts with the token they receive
+curl -X POST http://localhost:8000/auth/accept-invite \
+  -H "Content-Type: application/json" \
+  -d '{"token":"<token>","full_name":"Jane Doe","password":"securepass"}'
+```
+
+---
+
+## Knowledge Graph
+
+DocIntel optionally integrates [LightRAG](https://github.com/HKUDS/LightRAG) for knowledge-graph-enhanced retrieval. When enabled, entities and relationships are extracted from documents and stored as a graph, allowing multi-hop reasoning.
+
+**Requires:**
+```bash
+pip install -e ".[graph]"
+```
+
+**Retrieval modes when graph is enabled:**
+
+| Mode | Description |
+|---|---|
+| `vector` | Pure semantic similarity (default) |
+| `graph` | Graph-based entity and relation traversal |
+| `hybrid` | Combine vector and graph results (recommended with graph) |
+
+**Enable in Docker Compose:**
+
+The default `docker-compose.yml` already runs with `--rag-mode hybrid`. Graph rebuilding can be triggered from the **Graph** page in the UI or via API:
+
+```bash
+curl -X POST http://localhost:8000/graph/rebuild \
+  -H "Authorization: Bearer $TOKEN"
+
+# Check progress
+curl http://localhost:8000/graph/rebuild/status \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## Documentation
+
+| Document | Description |
+|---|---|
+| [docs/api.md](docs/api.md) | Complete HTTP API reference — all 35 endpoints with request/response schemas |
+| [docs/architecture.md](docs/architecture.md) | System architecture, data flow, multi-tenancy design |
+| [docs/deployment.md](docs/deployment.md) | Production deployment — Docker, SSL, secrets, scaling |
 
 ---
 
 ## Development
 
-### Run Tests
-
 ```bash
-uv run pytest
-```
+# Install dev dependencies
+pip install -e ".[server,postgres,office,ocr,dev]"
 
-The test suite uses deterministic fake LLM/embedding clients. No API key or network access is required. Currently: **64 tests pass, 6 skipped** (pgvector integration tests require a PostgreSQL instance).
+# Run tests
+pytest
 
-**Run pgvector integration tests:**
+# Lint
+ruff check docintel/
 
-```bash
-$env:DOCINTEL_TEST_PG_URL = "postgresql://user:pass@localhost:5432/docintel_test"
-uv run pytest -m integration
-```
-
-### Lint
-
-```bash
-uv run ruff check .
-```
-
-### Build
-
-```bash
-uv build --python 3.12
-```
-
-### Project Layout
-
-```
-docintel/
-├── __init__.py              # Module-level singleton API
-├── _config.py               # Config dataclass with validation
-├── _pipeline.py             # Central orchestrator
-├── logging.py               # Structured JSON logging
-├── metrics.py               # Thread-safe metrics counters
-├── lightrag_index.py        # LightRAG knowledge graph wrapper
-├── core/
-│   └── entities.py          # Document, Chunk, SearchResult, QueryResult
-├── extractors/
-│   ├── pdf.py               # PDF extraction (pypdf)
-│   └── text.py              # Plain-text extraction
-├── processing/
-│   ├── chunker.py           # Hierarchical heading-aware chunker
-│   └── embedder.py          # Batched embedding
-├── llm/
-│   ├── base.py              # BaseLLMClient ABC
-│   ├── gemini.py            # Google Gemini
-│   ├── openai_client.py     # OpenAI
-│   ├── anthropic_client.py  # Anthropic Claude
-│   └── ollama_client.py     # Local Ollama
-├── storage/
-│   ├── base.py              # VectorStore ABC
-│   ├── memory.py            # In-memory + JSON persistence
-│   ├── pgvector.py          # PostgreSQL + pgvector
-│   └── migrations/
-│       └── 001_init.sql     # PostgreSQL schema (auto-applied)
-└── server/
-    ├── __main__.py          # CLI entry point
-    ├── app.py               # FastAPI app factory
-    ├── routes.py            # HTTP endpoints
-    ├── schemas.py           # Pydantic models
-    └── middleware.py        # Auth, rate limiting, correlation IDs
+# Run the API server in dev mode (auto-reload)
+python -m docintel.server --backend memory --log-level DEBUG
 ```
 
 ---
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE) for details.

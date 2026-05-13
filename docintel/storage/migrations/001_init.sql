@@ -16,8 +16,8 @@ CREATE TABLE IF NOT EXISTS docintel_chunks (
 CREATE INDEX IF NOT EXISTS docintel_chunks_tenant_idx
     ON docintel_chunks (tenant_id);
 
--- HNSW index for approximate nearest-neighbour cosine search.
--- Works on empty tables; no training data required.
--- Tune m / ef_construction for your recall / build-time trade-off.
-CREATE INDEX IF NOT EXISTS docintel_chunks_embedding_idx
-    ON docintel_chunks USING hnsw (embedding vector_cosine_ops);
+-- Note: pgvector indexes (HNSW/IVFFlat) support max 2000 dimensions.
+-- Default embeddings are 3072-dim (gemini-embedding-001 / text-embedding-3-large).
+-- Sequential cosine scans are used instead — fine for <100k chunks.
+-- To use an index, switch to a 768-dim model (text-embedding-004 / text-embedding-3-small)
+-- and add: CREATE INDEX ... USING hnsw (embedding vector_cosine_ops);

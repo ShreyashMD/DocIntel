@@ -25,12 +25,18 @@ _PROVIDER_DEFAULTS: dict[str, dict] = {
         "embedding_model": "nomic-embed-text",
         "embedding_dim": 768,
     },
+    "nvidia": {
+        "generation_model": "meta/llama-3.1-70b-instruct",
+        "embedding_model":  "nvidia/nv-embedqa-e5-v5",
+        "embedding_dim":    1024,
+    },
 }
 
 _EMBED_PROVIDER_DEFAULTS: dict[str, dict] = {
     "gemini": {"embedding_model": "gemini-embedding-001", "embedding_dim": 3072},
     "openai": {"embedding_model": "text-embedding-3-large", "embedding_dim": 3072},
     "ollama": {"embedding_model": "nomic-embed-text", "embedding_dim": 768},
+    "nvidia": {"embedding_model": "nvidia/nv-embedqa-e5-v5", "embedding_dim": 1024},
 }
 
 
@@ -39,7 +45,7 @@ class Config:
     # ------------------------------------------------------------------
     # Provider selection
     # ------------------------------------------------------------------
-    provider: Literal["gemini", "openai", "anthropic", "ollama"] = "gemini"
+    provider: Literal["gemini", "openai", "anthropic", "ollama", "nvidia"] = "gemini"
 
     # When provider="anthropic" (no native embeddings), set this to "openai" or "ollama"
     embedding_provider: Optional[str] = None
@@ -50,6 +56,7 @@ class Config:
     gemini_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
+    nvidia_api_key: Optional[str] = None
     ollama_base_url: str = "http://localhost:11434"
 
     # ------------------------------------------------------------------
@@ -104,6 +111,23 @@ class Config:
     lightrag_dir: str = ".docintel_graph"
 
     # ------------------------------------------------------------------
+    # OCR
+    # ------------------------------------------------------------------
+    # When True, PDF pages with sparse text are automatically re-processed
+    # via Tesseract OCR (requires pytesseract + pdf2image + tesseract binary).
+    # Image uploads (PNG/JPG/etc.) always use OCR regardless of this flag.
+    ocr_enabled: bool = True
+    # Pages shorter than this many characters are treated as scanned/image.
+    ocr_min_chars_per_page: int = 50
+
+    # ------------------------------------------------------------------
+    # Pipeline / answer workflow
+    # ------------------------------------------------------------------
+    # "single"          — one LLM generates the answer directly (default)
+    # "writer_reviewer" — writer drafts, reviewer fact-checks & improves
+    pipeline_mode: Literal["single", "writer_reviewer"] = "single"
+
+    # ------------------------------------------------------------------
     # API rate limiting / retry
     # ------------------------------------------------------------------
     embed_batch_size: int = 20
@@ -132,6 +156,8 @@ class Config:
             raise ValueError("gemini_api_key is required when provider='gemini'.")
         if self.provider == "openai" and not self.openai_api_key:
             raise ValueError("openai_api_key is required when provider='openai'.")
+        if self.provider == "nvidia" and not self.nvidia_api_key:
+            raise ValueError("nvidia_api_key is required when provider='nvidia'.")
         if self.provider == "anthropic":
             if not self.anthropic_api_key:
                 raise ValueError("anthropic_api_key is required when provider='anthropic'.")

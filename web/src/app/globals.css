@@ -1,0 +1,129 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300;0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700;1,14..32,400&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  *, *::before, *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
+  }
+
+  body {
+    @apply bg-neutral-50 text-neutral-900 font-sans;
+  }
+
+  ::selection {
+    @apply bg-brand-100 text-brand-900;
+  }
+
+  /* Refined scrollbars */
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-neutral-200 rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover { @apply bg-neutral-300; }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-brand-500 ring-offset-1 ring-offset-white;
+  }
+}
+
+@layer components {
+
+  /* ── Page structure ──────────────────────────────────────────────── */
+
+  .page-header {
+    @apply bg-white border-b border-neutral-200 px-8 py-5 flex-shrink-0;
+  }
+
+  .page-header-title {
+    @apply text-lg font-semibold text-neutral-900 tracking-tight;
+  }
+
+  .page-header-desc {
+    @apply text-sm text-neutral-500 mt-0.5;
+  }
+
+  .page-body {
+    @apply px-8 py-6;
+  }
+
+  /* ── Typography ──────────────────────────────────────────────────── */
+
+  .stat-number {
+    @apply text-2xl font-bold tracking-tight text-neutral-900;
+  }
+
+  .label-xs {
+    @apply text-[10px] font-semibold uppercase tracking-[0.08em] text-neutral-500;
+  }
+
+  .label-sm {
+    @apply text-xs font-medium text-neutral-400 uppercase tracking-wider;
+  }
+
+  /* ── Form elements ───────────────────────────────────────────────── */
+
+  .input-base {
+    @apply h-9 w-full rounded-md border border-neutral-300 bg-white px-3 text-sm text-neutral-900
+           placeholder:text-neutral-400
+           focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500
+           hover:border-neutral-400
+           transition-colors duration-150
+           shadow-xs;
+  }
+
+  .input-dark {
+    @apply h-10 w-full rounded-md border border-white/20 bg-white/10 px-3 text-sm text-white
+           placeholder:text-white/40
+           focus:outline-none focus:ring-2 focus:ring-white/40 focus:border-white/40
+           hover:border-white/30
+           transition-colors duration-150;
+  }
+
+  /* ── Utility ─────────────────────────────────────────────────────── */
+
+  .ring-brand {
+    @apply ring-2 ring-brand-500 ring-offset-2;
+  }
+
+  .divider {
+    @apply border-t border-neutral-200 my-4;
+  }
+
+  /* Code inline */
+  code:not(pre code) {
+    @apply font-mono text-[0.82em] bg-neutral-100 text-neutral-700 px-1.5 py-0.5 rounded;
+  }
+
+  /* ── Enterprise table ────────────────────────────────────────────── */
+
+  .ent-table {
+    @apply w-full border-collapse;
+  }
+
+  .ent-table th {
+    @apply bg-neutral-50 border-b border-neutral-200 px-4 py-2.5 text-left text-xs font-semibold text-neutral-500 uppercase tracking-wider;
+  }
+
+  .ent-table td {
+    @apply border-b border-neutral-100 px-4 py-3 text-sm text-neutral-700;
+  }
+
+  .ent-table tr:last-child td {
+    @apply border-b-0;
+  }
+
+  .ent-table tbody tr:hover td {
+    @apply bg-neutral-50;
+  }
+}

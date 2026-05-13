@@ -3,7 +3,7 @@ name = "docintel"
 version = "0.1.0"
 description = "Industrial Document Analysis Framework — ingest, chunk, embed, and query documents with one import."
 requires-python = ">=3.10"
-license = { text = "Apache-2.0" }
+license = { text = "MIT" }
 keywords = ["document-analysis", "rag", "llm", "ocr", "industrial", "ai"]
 
 dependencies = [
@@ -14,10 +14,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ocr        = ["python-doctr[torch]>=0.9.0"]
+ocr        = ["pytesseract>=0.3.10", "Pillow>=10.0.0", "pdf2image>=1.16.0"]
 cad        = ["ezdxf>=1.3.0"]
-postgres   = ["psycopg2-binary>=2.9.0", "pgvector>=0.5.0"]
-server     = ["fastapi>=0.110", "uvicorn[standard]>=0.29"]
+postgres   = ["psycopg2-binary>=2.9.0", "pgvector>=0.3.0"]
+office     = ["python-docx>=1.1", "openpyxl>=3.1", "python-pptx>=0.6", "beautifulsoup4>=4.12"]
+server     = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "python-multipart>=0.0.9",
+              "python-jose[cryptography]>=3.3",
+              "bcrypt>=4.0",
+              "cryptography>=41.0",
+              "email-validator>=2.0"]
 openai     = ["openai>=1.30"]
 anthropic  = ["anthropic>=0.20"]
 graph      = ["lightrag-hku>=1.3"]

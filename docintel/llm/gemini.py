@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List
 
 from google import genai
@@ -22,13 +23,18 @@ class GeminiClient(BaseLLMClient):
     # ------------------------------------------------------------------
 
     def embed_texts(self, texts: List[str]) -> List[List[float]]:
-        results: List[List[float]] = []
         batch_size = self._config.embed_batch_size
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i : i + batch_size]
-            vectors = self._embed_batch(batch)
-            results.extend(vectors)
-        return results
+        batches = [texts[i : i + batch_size] for i in range(0, len(texts), batch_size)]
+        if len(batches) <= 1:
+            return self._embed_batch(batches[0]) if batches else []
+
+        results: list[list[list[float]] | None] = [None] * len(batches)
+        max_workers = min(4, len(batches))
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            future_to_idx = {pool.submit(self._embed_batch, b): i for i, b in enumerate(batches)}
+            for fut in as_completed(future_to_idx):
+                results[future_to_idx[fut]] = fut.result()
+        return [v for batch in results for v in batch]
 
     def _embed_batch(self, texts: List[str]) -> List[List[float]]:
         for attempt in self._retrying(min_wait=2, max_wait=60):

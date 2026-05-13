@@ -1,7 +1,7 @@
 from __future__ import annotations
 import json
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -24,6 +24,16 @@ SELECT id, text, metadata, doc_path, tenant_id,
        1 - (embedding <=> %s) AS score
 FROM docintel_chunks
 WHERE tenant_id = %s
+ORDER BY embedding <=> %s
+LIMIT %s
+"""
+
+_SEARCH_FILTERED_SQL = """
+SELECT id, text, metadata, doc_path, tenant_id,
+       1 - (embedding <=> %s) AS score
+FROM docintel_chunks
+WHERE tenant_id = %s
+  AND doc_path = ANY(%s)
 ORDER BY embedding <=> %s
 LIMIT %s
 """
@@ -90,28 +100,59 @@ class PgVectorStore(VectorStore):
         return _PooledConn(self._pool, self._register_vector)
 
     def _migrate(self) -> None:
-        create_table = (
-            "CREATE TABLE IF NOT EXISTS docintel_chunks ("
-            "  id         TEXT         PRIMARY KEY,"
-            "  tenant_id  TEXT         NOT NULL,"
-            "  doc_path   TEXT         NOT NULL,"
-            "  text       TEXT         NOT NULL,"
-            "  metadata   JSONB        NOT NULL DEFAULT '{}',"
-            f" embedding  vector({self._dim}) NOT NULL,"
-            "  created_at TIMESTAMPTZ  NOT NULL DEFAULT now()"
-            ")"
-        )
         with self._conn() as (conn, cur):
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            cur.execute(create_table)
+
+            # Check if the table already exists and what embedding dim it was built with.
+            cur.execute("""
+                SELECT a.atttypmod
+                FROM pg_attribute a
+                JOIN pg_class c ON c.oid = a.attrelid
+                WHERE c.relname = 'docintel_chunks'
+                  AND a.attname = 'embedding'
+                  AND a.attnum > 0
+            """)
+            row = cur.fetchone()
+            existing_dim: int | None = row[0] if row else None
+
+            if existing_dim is not None and existing_dim != self._dim:
+                # Embedding provider changed — old vectors live in a different space
+                # and cannot be mixed with or compared to new embeddings.
+                # Drop everything so the table is recreated with the correct dim.
+                logger.warning(
+                    "Embedding dim changed %d → %d: dropping docintel_chunks "
+                    "and document_library records so documents can be re-ingested.",
+                    existing_dim, self._dim,
+                )
+                cur.execute("DROP TABLE IF EXISTS docintel_chunks CASCADE")
+                cur.execute(
+                    "DELETE FROM document_library WHERE status IN ('ready', 'ingesting', 'failed')"
+                )
+                conn.commit()
+
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS docintel_chunks ("
+                "  id         TEXT         PRIMARY KEY,"
+                "  tenant_id  TEXT         NOT NULL,"
+                "  doc_path   TEXT         NOT NULL,"
+                "  text       TEXT         NOT NULL,"
+                "  metadata   JSONB        NOT NULL DEFAULT '{}',"
+                f" embedding  vector({self._dim}) NOT NULL,"
+                "  created_at TIMESTAMPTZ  NOT NULL DEFAULT now()"
+                ")"
+            )
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS docintel_chunks_tenant_idx "
                 "ON docintel_chunks (tenant_id)"
             )
-            cur.execute(
-                "CREATE INDEX IF NOT EXISTS docintel_chunks_embedding_idx "
-                "ON docintel_chunks USING hnsw (embedding vector_cosine_ops)"
-            )
+            # HNSW/IVFFlat indexes are capped at 2000 dims by pgvector.
+            # For higher-dim providers (Gemini/OpenAI at 3072) we fall back to
+            # sequential scans, which are fine up to ~100k chunks.
+            if self._dim <= 2000:
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS docintel_chunks_embedding_idx "
+                    "ON docintel_chunks USING hnsw (embedding vector_cosine_ops)"
+                )
             conn.commit()
         logger.info("pgvector migration applied", extra={"dim": self._dim})
 
@@ -141,10 +182,19 @@ class PgVectorStore(VectorStore):
             extra={"count": len(rows), "tenant": tenant_id, "doc": doc_path},
         )
 
-    def search(self, vector: List[float], tenant_id: str, top_k: int) -> List[SearchResult]:
+    def search(
+        self,
+        vector: List[float],
+        tenant_id: str,
+        top_k: int,
+        doc_paths: Optional[List[str]] = None,
+    ) -> List[SearchResult]:
         vec = np.array(vector, dtype=np.float32)
         with self._conn() as (conn, cur):
-            cur.execute(_SEARCH_SQL, (vec, tenant_id, vec, top_k))
+            if doc_paths is not None:
+                cur.execute(_SEARCH_FILTERED_SQL, (vec, tenant_id, list(doc_paths), vec, top_k))
+            else:
+                cur.execute(_SEARCH_SQL, (vec, tenant_id, vec, top_k))
             rows = cur.fetchall()
 
         results: List[SearchResult] = []
